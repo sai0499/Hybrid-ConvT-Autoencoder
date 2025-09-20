@@ -98,10 +98,14 @@ def main():
     maps = torch.cat(maps, dim=0)  # [B*len(dims),1,H,W]
 
     rows = [x, base, maps]
+    def _ensure_rgb(t: torch.Tensor) -> torch.Tensor:
+        """Repeat single-channel tensors to 3 channels for visualization."""
+        return t.repeat(1, 3, 1, 1) if t.size(1) == 1 else t
     if args.overlay:
         # repeat base to match stacked map rows: one base per dim
         base_rep = base.repeat(len(args.dims), 1, 1, 1)  # [B*len(dims),1,H,W]
         ov = overlay_heatmap(base_rep, maps, alpha=args.alpha, cmap=args.cmap)  # [B*len(dims),3,H,W]
+        rows = [_ensure_rgb(r) for r in rows]
         rows.append(ov)
 
     vis = torch.cat(rows, dim=0)
@@ -113,6 +117,7 @@ def main():
     fname = f"decoder_influence_dims_{'_'.join(map(str, args.dims))}.png"
     save_image(make_grid(vis, nrow=args.samples, padding=2), str(out / fname))
     print("Saved:", out / fname)
+
 
 
 if __name__ == "__main__":
