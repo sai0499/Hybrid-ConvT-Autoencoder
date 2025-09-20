@@ -3,6 +3,8 @@ import sys, os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import matplotlib.pyplot as plt
+
 import argparse
 import torch
 from torchvision.utils import save_image, make_grid
@@ -23,6 +25,25 @@ def filter_cfg(raw_cfg: dict) -> HybridVAEConfig:
             clean[k] = v
     return HybridVAEConfig(**clean)
 
+def overlay_heatmap(x: torch.Tensor, hm: torch.Tensor, alpha: float = 0.45, cmap: str = "jet"):
+    """
+    x: [B,1,H,W] or [B,3,H,W] in [0,1]
+    hm: [B,1,H,W] in [0,1]  (normalized heatmap)
+    returns [B,3,H,W] RGB overlays
+    """
+    if x.size(1) == 1:
+        x_rgb = x.repeat(1,3,1,1)
+    else:
+        x_rgb = x
+    overlays = []
+    for i in range(x.size(0)):
+        base = (x_rgb[i].permute(1,2,0).cpu().numpy())  # H,W,3
+        h = hm[i,0].cpu().numpy()                       # H,W
+        cm = plt.get_cmap(cmap)(h)[..., :3]             # H,W,3 in [0,1]
+        out = (1-alpha)*base + alpha*cm
+        overlays.append(torch.from_numpy(out).permute(2,0,1))
+    return torch.stack(overlays, 0).clamp(0, 1).to(x.device)
+
 @torch.no_grad()
 def main():
     ap = argparse.ArgumentParser()
@@ -32,6 +53,10 @@ def main():
     ap.add_argument("--dims", type=int, nargs="*", default=[0,1,2,3], help="latent dims to visualize")
     ap.add_argument("--delta", type=float, default=1.0, help="finite diff step on z")
     ap.add_argument("--samples", type=int, default=4)
+    ap.add_argument("--overlay", action="store_true", help="append color overlays")
+    ap.add_argument("--cmap", type=str, default="jet", help="matplotlib colormap")
+    ap.add_argument("--alpha", type=float, default=0.45, help="overlay opacity")
+
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -70,14 +95,25 @@ def main():
         infl = infl / (infl.amax(dim=[1,2,3], keepdim=True) + 1e-8)
         maps.append(infl)
 
-    maps = torch.cat(maps, dim=0)
-    # stack ref inputs, base recon, and influence maps
-    vis = torch.cat([x, base, maps], dim=0)
+    maps = torch.cat(maps, dim=0)  # [B*len(dims),1,H,W]
 
-    out = Path("results/xai"); out.mkdir(parents=True, exist_ok=True)
-    save_image(make_grid(vis.repeat(1,3,1,1) if vis.size(1)==1 else vis, nrow=args.samples, padding=2),
-               str(out / f"decoder_influence_dims_{'_'.join(map(str,args.dims))}.png"))
-    print("Saved:", out / f"decoder_influence_dims_{'_'.join(map(str,args.dims))}.png")
+    rows = [x, base, maps]
+    if args.overlay:
+        # repeat base to match stacked map rows: one base per dim
+        base_rep = base.repeat(len(args.dims), 1, 1, 1)  # [B*len(dims),1,H,W]
+        ov = overlay_heatmap(base_rep, maps, alpha=args.alpha, cmap=args.cmap)  # [B*len(dims),3,H,W]
+        rows.append(ov)
+
+    vis = torch.cat(rows, dim=0)
+    if vis.size(1) == 1:  # grayscale → RGB for saving
+        vis = vis.repeat(1, 3, 1, 1)
+
+    out = Path("results/xai");
+    out.mkdir(parents=True, exist_ok=True)
+    fname = f"decoder_influence_dims_{'_'.join(map(str, args.dims))}.png"
+    save_image(make_grid(vis, nrow=args.samples, padding=2), str(out / fname))
+    print("Saved:", out / fname)
+
 
 if __name__ == "__main__":
     main()

@@ -1,8 +1,9 @@
-# scripts/xai_encoder_ig.py
 from __future__ import annotations
 import sys, os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import matplotlib.pyplot as plt
 
 import argparse
 import torch
@@ -13,6 +14,25 @@ from data.amsl_quads import AMSLQuadsConfig, build_dataloader
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+def overlay_heatmap(x: torch.Tensor, hm: torch.Tensor, alpha: float = 0.45, cmap: str = "jet"):
+    """
+    x: [B,1,H,W] or [B,3,H,W] in [0,1]
+    hm: [B,1,H,W] in [0,1]  (normalized heatmap)
+    returns [B,3,H,W] RGB overlays
+    """
+    if x.size(1) == 1:
+        x_rgb = x.repeat(1,3,1,1)
+    else:
+        x_rgb = x
+    overlays = []
+    for i in range(x.size(0)):
+        base = (x_rgb[i].permute(1,2,0).cpu().numpy())  # H,W,3
+        h = hm[i,0].cpu().numpy()                       # H,W
+        cm = plt.get_cmap(cmap)(h)[..., :3]             # H,W,3 in [0,1]
+        out = (1-alpha)*base + alpha*cm
+        overlays.append(torch.from_numpy(out).permute(2,0,1))
+    return torch.stack(overlays, 0).clamp(0, 1).to(x.device)
 
 def filter_cfg(raw_cfg: dict) -> HybridVAEConfig:
     from dataclasses import fields as dataclass_fields
@@ -75,6 +95,7 @@ def main():
     ap.add_argument("--root", default="./AMSL Dataset", type=str)
     ap.add_argument("--img_size", type=int, default=256, help="use a SMALLER size for IG (e.g., 256)")
     ap.add_argument("--samples", type=int, default=2, help="fewer samples reduce VRAM")
+
     ap.add_argument("--target_dim", type=int, default=0, help="μ dimension to attribute")
     ap.add_argument("--n_steps", type=int, default=32, help="integration steps (32 is plenty)")
     ap.add_argument("--internal_bs", type=int, default=1, help="chunk IG path for memory")
@@ -117,8 +138,9 @@ def main():
     # normalize for visualization
     with torch.no_grad():
         att = attributions.abs()
-        att = att / (att.amax(dim=[1,2,3], keepdim=True) + 1e-8)
-        grid = torch.cat([to_vis3(x), to_vis3(att)], dim=0)
+        att = att / (att.amax(dim=[1, 2, 3], keepdim=True) + 1e-8)
+        overlay = overlay_heatmap(x, att, alpha=0.45, cmap="jet")
+        grid = torch.cat([to_vis3(x), to_vis3(att), overlay], dim=0)
         save_image(make_grid(grid, nrow=x.size(0), padding=2),
                    str(out_dir / f"ig_encoder_mu_dim{args.target_dim}.png"))
         print("Saved:", out_dir / f"ig_encoder_mu_dim{args.target_dim}.png")
