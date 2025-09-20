@@ -1,0 +1,12 @@
+{
+  "method": "counterfactual_nudge",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_stageB_best.pt",
+  "img_size": 256,
+  "delta": 1.0,
+  "dims": [
+    0,
+    1,
+    2
+  ],
+  "input_path": null
+}

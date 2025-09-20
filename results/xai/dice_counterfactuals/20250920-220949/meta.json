@@ -1,0 +1,24 @@
+{
+  "method": "dice_counterfactuals",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_stageB_best.pt",
+  "img_size": 256,
+  "device": "cpu",
+  "dims": [
+    17,
+    19,
+    57
+  ],
+  "dataset_items": 50,
+  "dice_batch": 8,
+  "samples": 1,
+  "total_cfs": 1,
+  "surrogate_accuracy": 0.6,
+  "results": [
+    {
+      "index": 0,
+      "original_area": 0.03125,
+      "cf_area": null,
+      "cf_features": null
+    }
+  ]
+}

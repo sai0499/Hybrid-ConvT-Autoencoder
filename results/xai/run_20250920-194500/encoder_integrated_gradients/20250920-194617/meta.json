@@ -1,0 +1,16 @@
+{
+  "method": "encoder_integrated_gradients",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_stageB_best.pt",
+  "img_size": 256,
+  "device": "cuda",
+  "target_dim": 0,
+  "samples": 4,
+  "n_steps": 32,
+  "baseline": "white",
+  "sample_images": [
+    "sample_00.png",
+    "sample_01.png",
+    "sample_02.png",
+    "sample_03.png"
+  ]
+}

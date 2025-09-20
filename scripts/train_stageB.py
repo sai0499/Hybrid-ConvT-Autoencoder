@@ -10,6 +10,7 @@ from torch import nn, Tensor
 from torch.amp import autocast, GradScaler
 from torchvision.utils import save_image, make_grid
 from pytorch_msssim import ms_ssim
+from tqdm import tqdm
 import argparse
 
 # repo modules
@@ -185,7 +186,8 @@ def main():
         vae.train(); disc.train()
         agg = {"l1":0.0, "ssim":0.0, "lpips":0.0, "gan_d":0.0, "gan_g":0.0, "fm":0.0, "n":0}
 
-        for b in train_dl:
+        train_bar = tqdm(train_dl, total=len(train_dl), desc=f"Train E{epoch:02d}", unit="batch", leave=False)
+        for b in train_bar:
             x = b["images"].to(device, non_blocking=True)
 
             # ========== D step ==========
@@ -281,7 +283,16 @@ def main():
             agg["gan_g"]+= float(g_gan.detach()) * bsz
             agg["fm"]   += float(fm.detach()) * bsz
 
+            avg_l1 = agg["l1"] / max(1, agg["n"])
+            avg_ssim = agg["ssim"] / max(1, agg["n"])
+            avg_lp = agg["lpips"] / max(1, agg["n"])
+            avg_d = agg["gan_d"] / max(1, agg["n"])
+            avg_g = agg["gan_g"] / max(1, agg["n"])
+            train_bar.set_postfix({"L1": f"{avg_l1:.4f}","SSIM": f"{avg_ssim:.4f}","LPIPS": f"{avg_lp:.3f}","D": f"{avg_d:.3f}","G": f"{avg_g:.3f}"})
+
             global_step += 1
+
+        train_bar.close()
 
         # epoch summary
         n = max(1, agg["n"])
@@ -297,7 +308,8 @@ def main():
         val_l1 = val_ssim = val_lp = val_psnr = 0.0
         v_count = 0
         with torch.no_grad():
-            for b in val_dl:
+            val_bar = tqdm(val_dl, total=len(val_dl), desc=f"Val E{epoch:02d}", unit="batch", leave=False)
+            for b in val_bar:
                 x = b["images"].to(device)
                 mu, logvar, feats = vae.encode(x)
                 xr = vae.decode(mu, feats).clamp(0,1)
@@ -315,16 +327,22 @@ def main():
                 val_lp += float(lpv) * x.size(0)
                 v_count += x.size(0)
 
+                if v_count > 0:
+                    val_bar.set_postfix({"L1": f"{val_l1 / v_count:.4f}","SSIM": f"{val_ssim / v_count:.4f}","LPIPS": f"{val_lp / v_count:.3f}","PSNR": f"{val_psnr / v_count:.2f}"})
+
+            val_bar.close()
+
             val_l1 /= v_count
             val_ssim /= v_count
             val_psnr /= v_count
             val_lp /= v_count
 
             # preview grid
-            x = next(iter(val_dl))["images"].to(device)[:8]
-            mu, logvar, feats = vae.encode(x)
+            preview_batch = next(iter(val_dl))["images"].to(device)[:8]
+            mu, logvar, feats = vae.encode(preview_batch)
             xr = vae.decode(mu, feats).clamp(0,1)
-            save_grid(torch.cat([x, xr], dim=0), out_dir / f"val_recon_e{epoch:02d}.png", nrow=8)
+            grid = torch.cat([preview_batch.detach().cpu(), xr.detach().cpu()], dim=0)
+            save_grid(grid, out_dir / f"val_recon_e{epoch:02d}.png", nrow=8)
 
         # restore non-EMA decoder
         vae.decoder.load_state_dict(dec_backup.state_dict(), strict=True)

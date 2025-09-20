@@ -1,0 +1,23 @@
+
+==== Latent vs attribute correlations ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_attr_correlation.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-203029 --device auto --max_items 4000 --batch 128
+STDOUT:
+Correlation table saved to results\xai\run_20250920-203029\attr_correlation\20250920-203129\latent_attribute_correlations.csv
+Individual bar charts and metadata available in results\xai\run_20250920-203029\attr_correlation\20250920-203129
+
+
+==== Latent embedding visualisation ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_tsne.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-203029 --device auto --max_items 2000 --batch 64 --perplexity 30.0
+STDOUT:
+Saved embedding visuals and arrays to results\xai\run_20250920-203029\latent_embedding\20250920-203200
+
+
+==== Encoder IG for z0 ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_encoder_ig.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-203029 --device auto --img_size 256 --samples 4 --target_dim 0 --n_steps 32
+STDOUT:
+Integrated Gradients visualisations saved in results\xai\run_20250920-203029\encoder_integrated_gradients\20250920-203205
+
+STDERR:
+C:\Users\saite\AppData\Local\Programs\Python\Python311\Lib\site-packages\captum\attr\_utils\batching.py:51: UserWarning: Internal batch size cannot be less than the number of input examples. Defaulting to internal batch size of 4 equal to the number of examples.
+  warnings.warn(
+

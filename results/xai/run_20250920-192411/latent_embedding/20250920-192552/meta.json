@@ -1,0 +1,14 @@
+{
+  "method": "latent_embedding",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_stageB_best.pt",
+  "split": "val",
+  "img_size": 256,
+  "latent_dim": 64,
+  "samples_used": 2000,
+  "embedding_method": "tsne",
+  "perplexity": 30.0,
+  "scatter_plots": {
+    "area_fraction": "tsne_area_fraction.png",
+    "recon_L1": "tsne_recon_L1.png"
+  }
+}

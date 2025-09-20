@@ -1,0 +1,72 @@
+
+==== Latent vs attribute correlations ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_attr_correlation.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-220309 --device auto --max_items 4000 --batch 128
+STDOUT:
+Correlation table saved to results\xai\run_20250920-220309\attr_correlation\20250920-220357\latent_attribute_correlations.csv
+Individual bar charts and metadata available in results\xai\run_20250920-220309\attr_correlation\20250920-220357
+
+
+==== Latent embedding visualisation ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_tsne.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-220309 --device auto --max_items 2000 --batch 64 --perplexity 30.0
+STDOUT:
+Saved embedding visuals and arrays to results\xai\run_20250920-220309\latent_embedding\20250920-220424
+
+
+==== Encoder IG for z0 ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_encoder_ig.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-220309 --device auto --img_size 256 --samples 4 --target_dim 0 --n_steps 32
+STDOUT:
+Integrated Gradients visualisations saved in results\xai\run_20250920-220309\encoder_integrated_gradients\20250920-220429
+
+STDERR:
+C:\Users\saite\AppData\Local\Programs\Python\Python311\Lib\site-packages\captum\attr\_utils\batching.py:51: UserWarning: Internal batch size cannot be less than the number of input examples. Defaulting to internal batch size of 4 equal to the number of examples.
+  warnings.warn(
+
+
+==== Encoder Grad-CAM for z0 ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_encoder_gradcam.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-220309 --device auto --img_size 256 --samples 4 --target_dim 0 --layer encoder.res_skip
+STDOUT:
+Grad-CAM visualisations saved in results\xai\run_20250920-220309\encoder_gradcam\20250920-220437
+
+
+==== Encoder Grad-CAM for z17 ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_encoder_gradcam.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-220309 --device auto --img_size 256 --samples 4 --target_dim 17 --layer encoder.res_skip
+STDOUT:
+Grad-CAM visualisations saved in results\xai\run_20250920-220309\encoder_gradcam\20250920-220443
+
+
+==== Decoder latent influence ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_decoder_influence.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-220309 --device auto --samples 4 --delta 1.0 --dims 0 1 2 3
+STDOUT:
+Decoder influence figures saved in results\xai\run_20250920-220309\decoder_influence\20250920-220449
+
+
+==== Counterfactual nudges ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_counterfactuals.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --device auto nudge --out_root results\xai\run_20250920-220309 --delta 1.0 --dims 0 1 2
+STDOUT:
+Nudge visualisations saved to results\xai\run_20250920-220309\counterfactual_nudge\20250920-220456
+
+
+==== Counterfactual optimisation ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_counterfactuals.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --device auto optimize --out_root results\xai\run_20250920-220309 --attr area --target 0.35 --steps 200 --lr 0.05 --lam 0.01 --dims 0
+STDOUT:
+Optimisation results saved to results\xai\run_20250920-220309\counterfactual_optimize\20250920-220507
+
+
+==== DiCE counterfactuals ====
+Command: C:\Users\saite\AppData\Local\Programs\Python\Python311\python.exe D:\Novel AE\explainability_AI\xai_dice_counterfactuals.py --ckpt D:\Novel AE\checkpoints\hybridvae_stageB_best.pt --root ./AMSL Dataset --out_root results\xai\run_20250920-220309 --device cuda --samples 2 --dataset_items 1000 --total_cfs 1 --dims 17 19 57 29 7 10
+STDERR:
+Traceback (most recent call last):
+  File "D:\Novel AE\explainability_AI\xai_dice_counterfactuals.py", line 233, in <module>
+    main()
+  File "D:\Novel AE\explainability_AI\xai_dice_counterfactuals.py", line 187, in main
+    dice_data, dice_model, clf = build_surrogate(df, args.dims)
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Novel AE\explainability_AI\xai_dice_counterfactuals.py", line 87, in build_surrogate
+    clf.fit(df[feature_names], df["label"])
+  File "C:\Users\saite\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\base.py", line 1389, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\saite\AppData\Local\Programs\Python\Python311\Lib\site-packages\sklearn\linear_model\_logistic.py", line 1301, in fit
+    raise ValueError(
+ValueError: This solver needs samples of at least 2 classes in the data, but the data contains only one class: 0
+

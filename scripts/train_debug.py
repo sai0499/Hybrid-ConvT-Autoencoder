@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.amp import autocast, GradScaler
 from torchvision.utils import save_image, make_grid
+from tqdm import tqdm
 from pytorch_msssim import ms_ssim
 
 # Speed + stability on NVIDIA
@@ -103,19 +104,51 @@ def main():
     device = torch.device("cuda" if use_cuda else "cpu")
     channels_last = True
 
-    # --- data cfg (256² debug; move to 512² on the 24GB server) ---
     data_root = "./AMSL Dataset"
     img_size = 256
     grayscale = True
     batch_size = 12 if use_cuda else 4
-    num_workers = 0  # Windows-safe
+    num_workers = 0
     attn_scales = (img_size // 8, img_size // 32) if USE_ATTENTION else ()
 
-    # --- model cfg ---
+    data_cfg = AMSLQuadsConfig(
+        root=data_root,
+        split="train",
+        img_size=img_size,
+        grayscale=grayscale,
+        include_annotations=False,
+        max_items=4000,
+    )
+    val_cfg = AMSLQuadsConfig(
+        root=data_root,
+        split="val",
+        img_size=img_size,
+        grayscale=grayscale,
+        include_annotations=False,
+        max_items=800,
+    )
+
+    train_ds, train_dl = build_dataloader(
+        data_cfg,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        persistent_workers=False,
+    )
+    _, val_dl = build_dataloader(
+        val_cfg,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        persistent_workers=False,
+    )
+
     mcfg = HybridVAEConfig(
         img_channels=1 if grayscale else 3,
         img_size=img_size,
-        base_channels=48,          # use 64 at 512²
+        base_channels=48,
         latent_dim=64,
         use_coordconv=True,
         use_unet_skips=True,
@@ -126,47 +159,30 @@ def main():
         up_method="nearest+conv",
     )
 
-    # --- datasets & loaders ---
-    train_cfg = AMSLQuadsConfig(root=data_root, split="train", img_size=img_size,
-                                grayscale=grayscale, include_annotations=False, max_items=4000)
-    val_cfg   = AMSLQuadsConfig(root=data_root, split="val",   img_size=img_size,
-                                grayscale=grayscale, include_annotations=False, max_items=800)
-
-    train_ds, train_dl = build_dataloader(train_cfg, batch_size=batch_size, shuffle=True,
-                                          num_workers=num_workers, pin_memory=use_cuda,
-                                          persistent_workers=False)
-    val_ds, val_dl = build_dataloader(val_cfg, batch_size=batch_size, shuffle=False,
-                                      num_workers=num_workers, pin_memory=use_cuda,
-                                      persistent_workers=False)
-
-    # --- model ---
     model = HybridVAE(mcfg).to(device)
     if channels_last:
         model = model.to(memory_format=torch.channels_last)
 
-    # Optional: per-channel dropout on skip (if field isn't in dataclass)
     if not hasattr(model.decoder.cfg, "skip_channel_dropout_p"):
         setattr(model.decoder.cfg, "skip_channel_dropout_p", 0.2)
     else:
         model.decoder.cfg.skip_channel_dropout_p = 0.2
 
     opt = torch.optim.Adam(model.parameters(), lr=5e-4, betas=(0.9, 0.999))
-    # prefer BF16 if supported (no scaler needed for BF16)
     AMP_DTYPE = torch.bfloat16 if (USE_AMP and use_cuda and torch.cuda.is_bf16_supported()) else torch.float16
     USE_SCALER = (USE_AMP and use_cuda and AMP_DTYPE is torch.float16)
-    scaler = GradScaler('cuda', enabled=USE_SCALER)
+    scaler = GradScaler("cuda", enabled=USE_SCALER)
     ema = EMA(model.decoder, decay=0.999)
 
     results_dir = Path("results/debug256"); results_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = Path("checkpoints"); ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- training knobs ---
     epochs = 8
     w_l1 = 1.0
     w_ssim = 0.5
-    gamma = 15.0    # capacity strength (raise to 20–50 if KL undershoots)
-    C_max = 3.5     # target KL at 256²; raise at 512²
-    C_warmup = 400  # steps before capacity ramps up
+    gamma = 15.0
+    C_max = 3.5
+    C_warmup = 400
 
     global_step = 0
     best_val_ssim = -1.0
@@ -174,7 +190,6 @@ def main():
 
     for epoch in range(1, epochs + 1):
         model.train()
-        # Apply SkipWarmup schedule
         drop_p, gate = skip_schedule(epoch)
         model.decoder.cfg.drop_skip_p = float(drop_p)
         model.decoder.cfg.skip_gate = float(gate)
@@ -183,40 +198,30 @@ def main():
         run_l1 = run_ssim = run_kl = run_total = 0.0
         n_samples = 0
 
-        for batch in train_dl:
+        train_bar = tqdm(train_dl, total=len(train_dl), desc=f"Train E{epoch:02d}", unit="batch", leave=False)
+        for batch in train_bar:
             x = batch["images"].to(device, non_blocking=True)
-            if channels_last: x = x.to(memory_format=torch.channels_last)
+            if channels_last:
+                x = x.to(memory_format=torch.channels_last)
 
-            # ---- encode (AMP) ----
             with autocast(device_type="cuda", dtype=AMP_DTYPE, enabled=(USE_AMP and use_cuda)):
                 mu, logvar, feats = model.encode(x)
-
-            # ---- reparameterize in fp32 (inside model) ----
             z = model.reparameterize(mu, logvar)
-
-            # ---- decode (AMP) ----
             with autocast(device_type="cuda", dtype=AMP_DTYPE, enabled=(USE_AMP and use_cuda)):
                 recon = model.decode(z, feats)
 
-            # ---- convert to fp32 for all losses ----
             x32, recon32 = x.float(), recon.float()
             mu32, logvar32 = mu.float(), logvar.float()
-
-            # NaN guard: if AMP decode produced NaNs, redo decode in fp32 for this batch
             if not torch.isfinite(recon32).all():
                 with autocast(device_type="cuda", enabled=False):
                     recon = model.decode(z, feats)
                 recon32 = recon.float()
 
-            # Weighted L1 + MS-SSIM (both fp32)
-            wmap = make_weight_map(x32)                            # [B,1,H,W]
+            wmap = make_weight_map(x32)
             l1_w = (wmap * (recon32 - x32).abs()).mean()
             ssim_val = ms_ssim(recon32, x32, data_range=1.0, size_average=True)
-
-            # KL in fp32 (model clamps logvar internally)
             kl = model.kl_divergence(mu32, logvar32).mean()
 
-            # recon + KL capacity
             recon_loss = w_l1 * l1_w + w_ssim * (1.0 - ssim_val)
             C_t = kl_capacity(global_step, total_train_steps, C_max=C_max, warmup_steps=C_warmup)
             loss = recon_loss + gamma * torch.abs(kl - C_t)
@@ -227,9 +232,7 @@ def main():
                 scaler.unscale_(opt)
             else:
                 loss.backward()
-
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
             if USE_SCALER:
                 scaler.step(opt); scaler.update()
             else:
@@ -237,13 +240,17 @@ def main():
 
             ema.update(model.decoder)
 
-            # stats
             bsz = x.size(0)
             n_samples += bsz
             run_l1 += float(l1_w.detach()) * bsz
             run_ssim += float(ssim_val.detach()) * bsz
             run_kl += float(kl.detach()) * bsz
             run_total += float(loss.detach()) * bsz
+
+            avg_l1 = run_l1 / max(1, n_samples)
+            avg_ssim = run_ssim / max(1, n_samples)
+            avg_kl = run_kl / max(1, n_samples)
+            train_bar.set_postfix({"L1": f"{avg_l1:.4f}", "SSIM": f"{avg_ssim:.4f}", "KL": f"{avg_kl:.2f}"})
 
             if (global_step % 500) == 0:
                 with torch.no_grad():
@@ -252,39 +259,40 @@ def main():
                     ema.copy_to(tmp_dec)
                     mu_, logvar_, feats_ = model.encode(x[:8])
                     recon_ema = tmp_dec(mu_, feats_)
-                    grid = torch.cat([x[:8], recon_ema[:8]], dim=0)
-                    save_grid_img(grid, results_dir / f"train_recon_step{global_step}.png", nrow=8)
+                    preview = torch.cat([x[:8].detach().cpu(), recon_ema[:8].detach().cpu()], dim=0)
+                    save_grid_img(preview, results_dir / f"train_recon_step{global_step}.png", nrow=8)
 
             global_step += 1
 
-        # epoch aggregates
+        train_bar.close()
+
         n = max(1, n_samples)
         tr_l1 = run_l1 / n
         tr_ssim = run_ssim / n
         tr_kl = run_kl / n
         tr_total = run_total / n
 
-        # ---- validation (EMA decoder) ----
         model.eval()
         val_l1 = val_ssim = val_psnr = 0.0
         v_count = 0
 
-        # swap in EMA weights for decoder
         dec_backup = type(model.decoder)(model.cfg).to(device)
         dec_backup.load_state_dict(model.decoder.state_dict(), strict=True)
         ema.copy_to(model.decoder)
 
         with torch.no_grad():
-            for batch in val_dl:
+            val_bar = tqdm(val_dl, total=len(val_dl), desc=f"Val E{epoch:02d}", unit="batch", leave=False)
+            for batch in val_bar:
                 x = batch["images"].to(device, non_blocking=True)
-                if channels_last: x = x.to(memory_format=torch.channels_last)
+                if channels_last:
+                    x = x.to(memory_format=torch.channels_last)
 
                 mu, logvar, feats = model.encode(x)
                 recon = model.decode(mu, feats)
 
                 x32, recon32 = x.float(), recon.float()
                 wmap = make_weight_map(x32)
-                l1v_w = (wmap * (recon32 - x32).abs()).mean(dim=[1,2,3])
+                l1v_w = (wmap * (recon32 - x32).abs()).mean(dim=[1, 2, 3])
                 ssimv = ms_ssim(recon32, x32, data_range=1.0, size_average=False)
                 psnrv = psnr(recon32, x32)
 
@@ -293,44 +301,57 @@ def main():
                 val_psnr += float(psnrv.sum())
                 v_count += x.size(0)
 
+                if v_count > 0:
+                    val_bar.set_postfix({"L1": f"{(val_l1 / v_count):.4f}", "SSIM": f"{(val_ssim / v_count):.4f}", "PSNR": f"{(val_psnr / v_count):.2f}"})
+
+            val_bar.close()
+
             val_l1 /= v_count
             val_ssim /= v_count
             val_psnr /= v_count
 
-            # preview grid
-            x = next(iter(val_dl))["images"].to(device, non_blocking=True)
-            if channels_last: x = x.to(memory_format=torch.channels_last)
-            mu, logvar, feats = model.encode(x[:8])
-            recon = model.decode(mu, feats)
-            save_grid_img(torch.cat([x[:8], recon[:8]], dim=0), results_dir / f"val_recon_e{epoch}.png", nrow=8)
+            try:
+                preview_batch = next(iter(val_dl))
+            except StopIteration:
+                preview_batch = None
+            if preview_batch is not None:
+                x_prev = preview_batch["images"].to(device)[:8]
+                if channels_last:
+                    x_prev = x_prev.to(memory_format=torch.channels_last)
+                mu_prev, logvar_prev, feats_prev = model.encode(x_prev)
+                recon_prev = model.decode(mu_prev, feats_prev)
+                preview = torch.cat([x_prev.detach().cpu(), recon_prev.detach().cpu()], dim=0)
+                save_grid_img(preview, results_dir / f"val_recon_e{epoch}.png", nrow=8)
 
-            # latent diagnostics
-            mu_dbg, logvar_dbg, _ = model.encode(x[:batch_size])
-            kld_dim = kl_per_dim(mu_dbg.float(), logvar_dbg.float())
-            active = count_active_units(kld_dim, tau=0.01)
-            mean_kld = float(kld_dim.mean().detach().cpu())
-
-        # restore non-EMA decoder
         model.decoder.load_state_dict(dec_backup.state_dict(), strict=True)
 
+        # latent diagnostics for logging
+        with torch.no_grad():
+            if preview_batch is not None:
+                diag_input = preview_batch["images"].to(device)[:batch_size]
+            else:
+                diag_input = next(iter(val_dl))["images"].to(device)[:batch_size]
+            if channels_last:
+                diag_input = diag_input.to(memory_format=torch.channels_last)
+            mu_dbg, logvar_dbg, _ = model.encode(diag_input)
+        kld_dim = kl_per_dim(mu_dbg.float(), logvar_dbg.float())
+        active = count_active_units(kld_dim, tau=0.01)
+        mean_kld = float(kld_dim.mean().detach().cpu())
+
         dt = time.time() - t0
-        C_now = kl_capacity(global_step, total_train_steps, C_max=C_max, warmup_steps=C_warmup)
         print(
             f"[E{epoch:02d}] {dt:5.1f}s  "
             f"train: L1={tr_l1:.5f} SSIM={tr_ssim:.4f} KL={tr_kl:.2f}  "
             f"val: L1={val_l1:.5f} SSIM={val_ssim:.4f} PSNR={val_psnr:.2f}dB  "
-            f"| latent: active={active}/{mcfg.latent_dim} meanKL={mean_kld:.3f}  "
-            f"| C_now={C_now:.2f}  | drop_skip_p={model.decoder.cfg.drop_skip_p:.2f} gate={model.decoder.cfg.skip_gate:.2f}"
+            f"| latent: active={active}/{mcfg.latent_dim} meanKL={mean_kld:.3f}"
         )
 
-        # save best by val SSIM
         ckpt_path = ckpt_dir / "hybridvae_debug256_best.pt"
         if val_ssim > best_val_ssim:
             best_val_ssim = val_ssim
             torch.save({"cfg": mcfg.__dict__, "model": model.state_dict(), "best_val_ssim": best_val_ssim}, ckpt_path)
-            print(f"  ↳ saved {ckpt_path} (best SSIM={best_val_ssim:.4f})")
+            print(f"  -> saved {ckpt_path} (best SSIM={best_val_ssim:.4f})")
 
     print("Done.")
-
 if __name__ == "__main__":
     main()

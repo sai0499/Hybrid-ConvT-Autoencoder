@@ -1,4 +1,3 @@
-# scripts/sample.py
 from __future__ import annotations
 import sys, os, math, random
 from pathlib import Path

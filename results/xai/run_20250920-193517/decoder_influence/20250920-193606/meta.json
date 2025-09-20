@@ -1,0 +1,28 @@
+{
+  "method": "decoder_influence",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_stageB_best.pt",
+  "img_size": 256,
+  "device": "cuda",
+  "delta": 1.0,
+  "samples": 4,
+  "dimensions": [
+    {
+      "dim": 0,
+      "mean_influence": [
+        0.0001427706447429955,
+        9.884910832624882e-05,
+        0.00035599363036453724,
+        0.000291064236080274
+      ]
+    },
+    {
+      "dim": 1,
+      "mean_influence": [
+        0.00019902645726688206,
+        9.668715938460082e-05,
+        0.00020552417845465243,
+        0.00020136137027293444
+      ]
+    }
+  ]
+}
