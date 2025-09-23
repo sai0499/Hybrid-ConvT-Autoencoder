@@ -63,10 +63,9 @@ def kl_capacity(global_step: int, total_steps: int, C_max: float = 6.0, warmup_s
 
 def skip_schedule(epoch: int) -> tuple[float, float]:
     # (drop_skip_p, skip_gate)
-    if epoch <= 2:  return 0.0, 1.0
-    if epoch <= 4:  return 0.3, 1.0
-    if epoch <= 6:  return 0.5, 0.9
-    return 0.3, 1.0
+    if epoch <= 4:  return 0.0, 1.0
+    if epoch <= 7:  return 0.15, 0.95
+    return 0.25, 0.9
 
 def kl_per_dim(mu: Tensor, logvar: Tensor) -> Tensor:
     return 0.5 * torch.mean(torch.exp(logvar) + mu**2 - 1.0 - logvar, dim=0)
@@ -107,7 +106,7 @@ def main():
     data_root = "./AMSL Dataset"
     img_size = 256
     grayscale = True
-    batch_size = 12 if use_cuda else 4
+    batch_size = 16 if use_cuda else 4
     num_workers = 0
     attn_scales = (img_size // 8, img_size // 32) if USE_ATTENTION else ()
 
@@ -117,7 +116,7 @@ def main():
         img_size=img_size,
         grayscale=grayscale,
         include_annotations=False,
-        max_items=4000,
+        max_items=None,
     )
     val_cfg = AMSLQuadsConfig(
         root=data_root,
@@ -125,7 +124,7 @@ def main():
         img_size=img_size,
         grayscale=grayscale,
         include_annotations=False,
-        max_items=800,
+        max_items=None,
     )
 
     train_ds, train_dl = build_dataloader(
@@ -164,9 +163,9 @@ def main():
         model = model.to(memory_format=torch.channels_last)
 
     if not hasattr(model.decoder.cfg, "skip_channel_dropout_p"):
-        setattr(model.decoder.cfg, "skip_channel_dropout_p", 0.2)
+        setattr(model.decoder.cfg, "skip_channel_dropout_p", 0.1)
     else:
-        model.decoder.cfg.skip_channel_dropout_p = 0.2
+        model.decoder.cfg.skip_channel_dropout_p = 0.1
 
     opt = torch.optim.Adam(model.parameters(), lr=5e-4, betas=(0.9, 0.999))
     AMP_DTYPE = torch.bfloat16 if (USE_AMP and use_cuda and torch.cuda.is_bf16_supported()) else torch.float16
@@ -177,12 +176,12 @@ def main():
     results_dir = Path("results/debug256"); results_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = Path("checkpoints"); ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    epochs = 8
+    epochs = 10
     w_l1 = 1.0
     w_ssim = 0.5
-    gamma = 15.0
-    C_max = 3.5
-    C_warmup = 400
+    gamma = 4
+    C_max = 18
+    C_warmup = 3000
 
     global_step = 0
     best_val_ssim = -1.0
@@ -257,6 +256,7 @@ def main():
                     tmp_dec = type(model.decoder)(model.cfg).to(device)
                     tmp_dec.load_state_dict(model.decoder.state_dict(), strict=True)
                     ema.copy_to(tmp_dec)
+                    tmp_dec.eval()  # disable skip dropout for previews
                     mu_, logvar_, feats_ = model.encode(x[:8])
                     recon_ema = tmp_dec(mu_, feats_)
                     preview = torch.cat([x[:8].detach().cpu(), recon_ema[:8].detach().cpu()], dim=0)

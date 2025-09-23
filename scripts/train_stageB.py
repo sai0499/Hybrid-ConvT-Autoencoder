@@ -78,9 +78,23 @@ class EMA:
         module.load_state_dict(self.shadow, strict=True)
 
 def ramp(global_step: int, total_steps: int, v0: float, v1: float, frac: float) -> float:
-    """Linear ramp from v0→v1 over (frac*total_steps)."""
+    """Linear ramp from v0?v1 over (frac*total_steps)."""
     t = min(1.0, global_step / max(1, int(total_steps * frac)))
     return v0 + (v1 - v0) * t
+
+def kl_capacity(global_step: int, total_steps: int, C_max: float = 18.0, warmup_frac: float = 0.45) -> float:
+    warmup_steps = int(total_steps * warmup_frac)
+    if global_step <= warmup_steps:
+        return 0.0
+    t = min(1.0, (global_step - warmup_steps) / max(1, total_steps - warmup_steps))
+    return C_max * t
+
+def skip_schedule(epoch: int) -> tuple[float, float]:
+    if epoch <= 4:
+        return 0.0, 1.0
+    if epoch <= 7:
+        return 0.15, 0.95
+    return 0.25, 0.9
 
 # --------------- trainer ---------------
 def main():
@@ -143,15 +157,11 @@ def main():
     vae = HybridVAE(gcfg).to(device).train()
     vae.load_state_dict(ckpt["model"], strict=False)  # allow shape changes if 256→512
 
-    # keep skip active but not dominant
-    if hasattr(vae.decoder.cfg, "drop_skip_p"):
-        vae.decoder.cfg.drop_skip_p = 0.3
-    if hasattr(vae.decoder.cfg, "skip_gate"):
-        vae.decoder.cfg.skip_gate = 1.0
-    if not hasattr(vae.decoder.cfg, "skip_channel_dropout_p"):
-        setattr(vae.decoder.cfg, "skip_channel_dropout_p", 0.15)
+    # strengthen latent reliance
+    if hasattr(vae.decoder.cfg, "skip_channel_dropout_p"):
+        vae.decoder.cfg.skip_channel_dropout_p = 0.1
     else:
-        vae.decoder.cfg.skip_channel_dropout_p = 0.15
+        setattr(vae.decoder.cfg, "skip_channel_dropout_p", 0.1)
 
     # -------- discriminator --------
     disc = PatchDiscriminator(in_channels=gcfg.img_channels, base_channels=64,
@@ -184,11 +194,20 @@ def main():
 
         t0 = time.time()
         vae.train(); disc.train()
-        agg = {"l1":0.0, "ssim":0.0, "lpips":0.0, "gan_d":0.0, "gan_g":0.0, "fm":0.0, "n":0}
+        drop_p, gate = skip_schedule(epoch)
+        if hasattr(vae.decoder.cfg, "drop_skip_p"):
+            vae.decoder.cfg.drop_skip_p = float(drop_p)
+        if hasattr(vae.decoder.cfg, "skip_gate"):
+            vae.decoder.cfg.skip_gate = float(gate)
+        if hasattr(vae.decoder.cfg, "skip_channel_dropout_p"):
+            vae.decoder.cfg.skip_channel_dropout_p = 0.1
+
+        agg = {"l1":0.0, "ssim":0.0, "lpips":0.0, "gan_d":0.0, "gan_g":0.0, "fm":0.0, "kl":0.0, "n":0}
 
         train_bar = tqdm(train_dl, total=len(train_dl), desc=f"Train E{epoch:02d}", unit="batch", leave=False)
         for b in train_bar:
             x = b["images"].to(device, non_blocking=True)
+            use_prior = (args.prior_prob > 0.0) and (random.random() < args.prior_prob)
 
             # ========== D step ==========
             with torch.no_grad():
@@ -200,7 +219,7 @@ def main():
                     x_rec = vae.decode(z, feats).clamp(0,1)
 
                 # optional prior samples (unconditional)
-                if random.random() < args.prior_prob:
+                if use_prior:
                     z_prior = torch.randn(x.size(0), gcfg.latent_dim, device=device)
                     with autocast(device_type="cuda", dtype=AMP_DTYPE, enabled=use_amp):
                         x_prior = vae.decode(z_prior, feats=None).clamp(0,1)
@@ -229,21 +248,20 @@ def main():
             # ========== G step ==========
             for p in disc.parameters(): p.requires_grad_(False)
             opt_g.zero_grad(set_to_none=True)
-
             # forward fresh for G
             with autocast(device_type="cuda", dtype=AMP_DTYPE, enabled=use_amp):
                 mu, logvar, feats = vae.encode(x)
             z = vae.reparameterize(mu, logvar)
             with autocast(device_type="cuda", dtype=AMP_DTYPE, enabled=use_amp):
                 x_rec = vae.decode(z, feats).clamp(0,1)
-
             # recon/perceptual in fp32
             x32, xr32 = x.float(), x_rec.float()
             wmap = make_weight_map(x32)
             l1 = (wmap * (xr32 - x32).abs()).mean()
             ssim_loss = ms_ssim_loss(xr32, x32)               # 1 - MS-SSIM
             lp = lpips_loss(xr32, x32)
-
+            mu32, logvar32 = mu.float(), logvar.float()
+            kl_val = vae.kl_divergence(mu32, logvar32).mean()
             # GAN + feature matching
             with autocast(device_type="cuda", dtype=AMP_DTYPE, enabled=use_amp):
                 fake_logits, fake_feats = disc(x_rec)
@@ -252,16 +270,25 @@ def main():
             fm = 0.0
             for rf, ff in zip(real_feats, fake_feats):
                 fm = fm + (rf.float() - ff.float()).abs().mean()
-
+            if use_prior:
+                with autocast(device_type="cuda", dtype=AMP_DTYPE, enabled=use_amp):
+                    z_prior_g = torch.randn(x.size(0), gcfg.latent_dim, device=device)
+                    x_prior_g = vae.decode(z_prior_g, feats=None).clamp(0,1)
+                    prior_logits, prior_feats = disc(x_prior_g)
+                g_gan_prior = gan.g_loss(prior_logits)
+                g_gan = g_gan + g_gan_prior
+                for rf, pf in zip(real_feats, prior_feats):
+                    fm = fm + (rf.float() - pf.float()).abs().mean()
             # ramps
-            lam_gan = ramp(global_step, total_iters, 0.0, 0.25, frac=0.30)   # 0→0.25 over 30% iters
-            lam_lp  = ramp(global_step, total_iters, 0.0, 0.20, frac=0.50)   # 0→0.20 over 50% iters
+            lam_gan = ramp(global_step, total_iters, 0.0, 0.25, frac=0.30)   # 0?0.25 over 30% iters
+            lam_lp  = ramp(global_step, total_iters, 0.0, 0.20, frac=0.50)   # 0?0.20 over 50% iters
             lam_fm  = 10.0
             lam_l1  = 1.0
             lam_ss  = 0.3
-
-            g_loss = lam_l1*l1 + lam_ss*ssim_loss + lam_lp*lp + lam_gan*g_gan + lam_fm*fm
-
+            lam_kl  = ramp(global_step, total_iters, 0.0, 2.0, frac=0.35)
+            C_t = kl_capacity(global_step, total_iters, C_max=18.0, warmup_frac=0.45)
+            kl_term = torch.abs(kl_val - C_t)
+            g_loss = lam_l1*l1 + lam_ss*ssim_loss + lam_lp*lp + lam_gan*g_gan + lam_fm*fm + lam_kl*kl_term
             if USE_SCALER:
                 scaler.scale(g_loss).backward()
                 scaler.unscale_(opt_g)
@@ -271,7 +298,6 @@ def main():
                 g_loss.backward()
                 torch.nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
                 opt_g.step()
-
             ema.update(vae.decoder)
 
             # logs
@@ -282,13 +308,15 @@ def main():
             agg["gan_d"]+= float(d_loss.detach()) * bsz
             agg["gan_g"]+= float(g_gan.detach()) * bsz
             agg["fm"]   += float(fm.detach()) * bsz
+            agg["kl"]   += float(kl_val.detach()) * bsz
 
             avg_l1 = agg["l1"] / max(1, agg["n"])
             avg_ssim = agg["ssim"] / max(1, agg["n"])
             avg_lp = agg["lpips"] / max(1, agg["n"])
+            avg_kl = agg["kl"] / max(1, agg["n"])
             avg_d = agg["gan_d"] / max(1, agg["n"])
             avg_g = agg["gan_g"] / max(1, agg["n"])
-            train_bar.set_postfix({"L1": f"{avg_l1:.4f}","SSIM": f"{avg_ssim:.4f}","LPIPS": f"{avg_lp:.3f}","D": f"{avg_d:.3f}","G": f"{avg_g:.3f}"})
+            train_bar.set_postfix({"L1": f"{avg_l1:.4f}","SSIM": f"{avg_ssim:.4f}","LPIPS": f"{avg_lp:.3f}","KL": f"{avg_kl:.2f}","D": f"{avg_d:.3f}","G": f"{avg_g:.3f}"})
 
             global_step += 1
 
@@ -298,6 +326,7 @@ def main():
         n = max(1, agg["n"])
         tr_l1, tr_ssim = agg["l1"]/n, agg["ssim"]/n
         tr_lp, tr_d, tr_g = agg["lpips"]/n, agg["gan_d"]/n, agg["gan_g"]/n
+        tr_kl = agg["kl"]/n
 
         # -------- validation with EMA decoder --------
         vae.eval()
@@ -349,7 +378,7 @@ def main():
 
         dt = time.time() - t0
         print(f"[E{epoch:02d}] {dt:5.1f}s  "
-              f"train: L1={tr_l1:.4f} SSIM={tr_ssim:.4f} LPIPS={tr_lp:.3f} D={tr_d:.3f} G={tr_g:.3f}  "
+              f"train: L1={tr_l1:.4f} SSIM={tr_ssim:.4f} LPIPS={tr_lp:.3f} KL={tr_kl:.2f} D={tr_d:.3f} G={tr_g:.3f}  "
               f"val: L1={val_l1:.4f} SSIM={val_ssim:.4f} LPIPS={val_lp:.3f} PSNR={val_psnr:.2f}dB")
 
         # save best by SSIM - 0.5*LPIPS

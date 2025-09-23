@@ -1,0 +1,45 @@
+{
+  "method": "dice_counterfactuals",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_debug256_best.pt",
+  "img_size": 256,
+  "device": "cuda",
+  "dims": [
+    17,
+    19,
+    57,
+    29,
+    7,
+    10
+  ],
+  "dataset_items": 2000,
+  "dice_batch": 16,
+  "samples": 4,
+  "total_cfs": 1,
+  "surrogate_accuracy": 0.5955,
+  "results": [
+    {
+      "index": 0,
+      "original_area": 0.03125,
+      "cf_area": null,
+      "cf_features": null
+    },
+    {
+      "index": 1,
+      "original_area": 0.0400390625,
+      "cf_area": null,
+      "cf_features": null
+    },
+    {
+      "index": 2,
+      "original_area": 0.035400390625,
+      "cf_area": null,
+      "cf_features": null
+    },
+    {
+      "index": 3,
+      "original_area": 0.045166015625,
+      "cf_area": null,
+      "cf_features": null
+    }
+  ]
+}

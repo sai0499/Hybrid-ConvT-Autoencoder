@@ -1,0 +1,15 @@
+{
+  "method": "encoder_gradcam",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_debug256_best.pt",
+  "img_size": 256,
+  "device": "cuda",
+  "target_dim": 0,
+  "layer": "encoder.res_skip",
+  "samples": 4,
+  "files": [
+    "sample_00.png",
+    "sample_01.png",
+    "sample_02.png",
+    "sample_03.png"
+  ]
+}

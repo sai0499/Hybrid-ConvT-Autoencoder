@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--img_size", type=int, default=256, help="Image resolution for Stage-B")
     parser.add_argument("--base", type=int, default=48, help="Base channel width for Stage-B VAE")
     parser.add_argument("--batch", type=int, default=12, help="Batch size for Stage-B")
-    parser.add_argument("--epochs", type=int, default=8, help="Number of Stage-B epochs")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of Stage-B epochs")
     parser.add_argument("--lr_g", type=float, default=2e-4, help="Generator/autoencoder learning rate")
     parser.add_argument("--lr_d", type=float, default=2e-4, help="Discriminator learning rate")
     parser.add_argument("--freeze_enc_epochs", type=int, default=10,

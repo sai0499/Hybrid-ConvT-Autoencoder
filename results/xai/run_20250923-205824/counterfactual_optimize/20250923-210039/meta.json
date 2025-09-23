@@ -1,0 +1,20 @@
+{
+  "method": "counterfactual_optimize",
+  "checkpoint": "D:\\Novel AE\\checkpoints\\hybridvae_debug256_best.pt",
+  "img_size": 256,
+  "dims": [
+    0
+  ],
+  "attr": "area",
+  "target": 0.35,
+  "achieved": 0.031296372413635254,
+  "base_stats": {
+    "area": 0.031296372413635254,
+    "xspread": 2953.550537109375,
+    "yspread": 3186.814453125
+  },
+  "steps": 200,
+  "lr": 0.05,
+  "lam": 0.01,
+  "input_path": null
+}
